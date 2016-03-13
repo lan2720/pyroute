@@ -45,12 +45,12 @@ class GetRoutes(handler.ContentHandler):
   def startElement(self, name, attrs):
     """Handle XML elements"""
     if name in('node','way','relation'):
+      self.id = int(attrs.get('id'))
       if name == 'node':
         """Nodes need to be stored"""
-        id = int(attrs.get('id'))
         lat = float(attrs.get('lat'))
         lon = float(attrs.get('lon'))
-        self.nodes[id] = (lat,lon)
+        self.nodes[self.id] = (lat,lon)
         if lon < self.minLon:
           self.minLon = lon
         if lat < self.minLat:
@@ -61,6 +61,8 @@ class GetRoutes(handler.ContentHandler):
           self.maxLat = lat
       self.tags = {}
       self.waynodes = []
+      # add a dict to store node pair - wayid
+      self.nodesInWay = {}
     elif name == 'nd':
       """Nodes within a way -- add them to a list"""
       self.waynodes.append(int(attrs.get('ref')))
@@ -78,21 +80,34 @@ class GetRoutes(handler.ContentHandler):
       oneway = self.tags.get('oneway', '')
       reversible = not oneway in('yes','true','1')
       cyclable = highway in ('primary','secondary','tertiary','unclassified','minor','cycleway','residential', 'service')
+      # determine current way can route by which transport
       access = {}
       access['cycle'] = highway in ('primary','secondary','tertiary','unclassified','minor','cycleway','residential', 'track','service')
       access['car'] = highway in ('motorway','trunk','primary','secondary','tertiary','unclassified','minor','residential', 'service')
       access['train'] = railway in('rail','light_rail','subway')
       access['foot'] = access['cycle'] or highway in('footway','steps')
       access['horse'] = highway in ('track','unclassified','bridleway')
+
       for i in self.waynodes:
         if last != -1:
           if access[self.transport]:
+            nodepair = str(last)+','+str(i)
+            self.nodesInWay[nodepair] = self.id
             weight = self.weights.get(self.transport, railway or highway)
             #print "%d -> %d & v.v." % (last, i)
             self.addLink(last, i, weight)
             if reversible:
               self.addLink(i, last, weight)
         last = i
+      # output nodesInWay to file one line using json(dict)
+      if self.nodesInWay: # if not a way, nodesInWay = {}
+        self._outputJson(self.nodesInWay, 'nodepair_way.txt')
+      
+  def _outputJson(self, d, outputfile):
+    # d is a dict will be outputed
+    import json
+    with open(outputfile, 'a+') as fout:
+      fout.write(json.dumps(d) + '\n')
 
   def addLink(self,fr,to, weight):
     """Add a routeable edge to the scenario"""
