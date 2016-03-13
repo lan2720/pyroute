@@ -28,13 +28,16 @@ import sys
 import cairo
 import math 
 from xml.sax import make_parser, handler
+import weights
 
 class GetRoutes(handler.ContentHandler):
   """Parse an OSM file looking for routing information, and do routing with it"""
-  def __init__(self):
+  def __init__(self, transport):
     """Initialise an OSM-file parser"""
+    self.transport = transport
     self.routing = {}
     self.nodes = {}
+    self.weights = weights.RoutingWeights()
     self.minLon = 180
     self.minLat = 90
     self.maxLon = -180
@@ -75,16 +78,23 @@ class GetRoutes(handler.ContentHandler):
       oneway = self.tags.get('oneway', '')
       reversible = not oneway in('yes','true','1')
       cyclable = highway in ('primary','secondary','tertiary','unclassified','minor','cycleway','residential', 'service')
-      if cyclable:
-        for i in self.waynodes:
-          if last != -1:
+      access = {}
+      access['cycle'] = highway in ('primary','secondary','tertiary','unclassified','minor','cycleway','residential', 'track','service')
+      access['car'] = highway in ('motorway','trunk','primary','secondary','tertiary','unclassified','minor','residential', 'service')
+      access['train'] = railway in('rail','light_rail','subway')
+      access['foot'] = access['cycle'] or highway in('footway','steps')
+      access['horse'] = highway in ('track','unclassified','bridleway')
+      for i in self.waynodes:
+        if last != -1:
+          if access[self.transport]:
+            weight = self.weights.get(self.transport, railway or highway)
             #print "%d -> %d & v.v." % (last, i)
-            self.addLink(last, i)
+            self.addLink(last, i, weight)
             if reversible:
-              self.addLink(i, last)
-          last = i
+              self.addLink(i, last, weight)
+        last = i
 
-  def addLink(self,fr,to):
+  def addLink(self,fr,to, weight):
     """Add a routeable edge to the scenario"""
     # Look for existing
     try:
@@ -92,9 +102,9 @@ class GetRoutes(handler.ContentHandler):
         #print "duplicate %d from %d" % (to,fr)
         return
       # Try to add to list. If list doesn't exist, create it
-      self.routing[fr].append(to)
+      self.routing[fr][to] = weight
     except KeyError:
-      self.routing[fr] = [to]
+      self.routing[fr] = {to: weight} 
   
   def initProj(self,w,h, lat,lon, scale=1):
     """Setup an image coordinate system"""
@@ -183,8 +193,8 @@ class GetRoutes(handler.ContentHandler):
     
     # Start by queueing all outbound links from the start node
     blankQueueItem = {'end':-1,'distance':0,'nodes':str(start)}
-    for i in self.routing[start]:
-      self.addToQueue(start,i, blankQueueItem)
+    for i, weight in self.routing[start].items():
+      self.addToQueue(start,i, blankQueueItem, weight)
     
     # Limit for how long it will search (also useful for debugging step-by-step)
     maxSteps = 1000000 # 10000
@@ -256,7 +266,7 @@ class GetRoutes(handler.ContentHandler):
     fout.write("</osm>")
     fout.close()
   
-  def addToQueue(self,start,end, queueSoFar):
+  def addToQueue(self,start,end, queueSoFar, weight = 1):
     """Add another potential route to the queue"""
     
     # If already in queue
@@ -264,6 +274,9 @@ class GetRoutes(handler.ContentHandler):
       if test['end'] == end:
         return
     distance = self.distance(start, end)
+    if weight == 0:
+      return
+    distance = distance/weight
     
     # Create a hash for all the route's attributes
     queueItem = {}
@@ -287,7 +300,7 @@ class GetRoutes(handler.ContentHandler):
 
 # Parse the supplied OSM file
 print "Loading data..."
-obj = GetRoutes()
+obj = GetRoutes(sys.argv[4]) # transport
 parser = make_parser()
 parser.setContentHandler(obj)
 parser.parse(sys.argv[1])
